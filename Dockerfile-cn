@@ -1,0 +1,16 @@
+FROM hub.cicd.getdeepin.org/library/golang as builder
+RUN  go env -w GOPROXY=https://goproxy.cn,direct
+WORKDIR /src
+COPY go.mod go.sum /src/
+RUN go mod download
+COPY . /src
+RUN go build -o server
+
+FROM hub.cicd.getdeepin.org/library/debian
+COPY --from=builder /etc/ssl/certs /etc/ssl/certs
+RUN sed -i 's|http://deb.debian.org|https://mirrors.cicd.getdeepin.org|g' /etc/apt/sources.list.d/debian.sources
+RUN apt-get update && apt-get install -y curl
+RUN curl https://cursor.com/install -fsS | bash
+RUN ln -s /root/.local/bin/cursor-agent /usr/bin/
+COPY --from=builder /src/server /
+CMD ["/server"]
