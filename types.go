@@ -1,5 +1,10 @@
 package main
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // OpenAI API 请求和响应结构体
 
 // ChatCompletionRequest 聊天完成请求
@@ -19,8 +24,35 @@ type ChatCompletionRequest struct {
 
 // Message 消息结构
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string           `json:"role"`
+	Content []MessageContent `json:"content"`
+}
+
+func (f *Message) UnmarshalJSON(data []byte) error {
+	var v struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(data, &v); err == nil {
+		f.Role = v.Role
+		f.Content = []MessageContent{{Type: "text", Text: v.Content}}
+		return nil
+	}
+	var v2 struct {
+		Role    string           `json:"role"`
+		Content []MessageContent `json:"content"`
+	}
+	if err := json.Unmarshal(data, &v2); err == nil {
+		f.Role = v2.Role
+		f.Content = v2.Content
+		return nil
+	}
+	return fmt.Errorf("invalid message content: %s", string(data))
+}
+
+type MessageContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // ChatCompletionResponse 聊天完成响应
@@ -35,9 +67,14 @@ type ChatCompletionResponse struct {
 
 // Choice 选择结构
 type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      ChoiceMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
+}
+
+type ChoiceMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // Usage 使用情况

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,6 +63,7 @@ func chatCompletionsHandler(c *gin.Context) {
 	slog.Debug("chatCompletionsHandler")
 	var req ChatCompletionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.Error("chatCompletionsHandler", "error", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
 	}
@@ -93,7 +94,9 @@ func handleNonStreamChatCompletion(c *gin.Context, req ChatCompletionRequest) {
 	)
 	message := ""
 	for _, msg := range req.Messages {
-		message += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
+		for _, content := range msg.Content {
+			message += fmt.Sprintf("%s: %s\n", msg.Role, content.Text)
+		}
 	}
 	slog.Info("chat", "input", message)
 	cmd.Stdin = strings.NewReader(message)
@@ -105,8 +108,12 @@ func handleNonStreamChatCompletion(c *gin.Context, req ChatCompletionRequest) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	slog.Debug("execute cursor-agent", "input", message, "model", req.Model, "api-key", apiKey[:4]+"******", "output", string(out))
+	escIndex := bytes.Index(out, []byte{27})
+	if escIndex != -1 {
+		out = out[:escIndex]
+	}
 	content := string(out)
+	slog.Debug("execute cursor-agent", "input", message, "model", req.Model, "api-key", apiKey[:4]+"******", "output", content)
 	slog.Info("chat", "output", content)
 	response := ChatCompletionResponse{
 		ID:      "chatcmpl-123",
@@ -116,7 +123,7 @@ func handleNonStreamChatCompletion(c *gin.Context, req ChatCompletionRequest) {
 		Choices: []Choice{
 			{
 				Index: 0,
-				Message: Message{
+				Message: ChoiceMessage{
 					Role:    "assistant",
 					Content: content,
 				},
@@ -161,7 +168,9 @@ func handleStreamChatCompletion(c *gin.Context, req ChatCompletionRequest) {
 		)
 		message := ""
 		for _, msg := range req.Messages {
-			message += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
+			for _, content := range msg.Content {
+				message += fmt.Sprintf("%s: %s\n", msg.Role, content.Text)
+			}
 		}
 		slog.Info("chat", "input", message)
 		slog.Debug("execute cursor-agent", "streamID", streamID, "input", message, "model", req.Model, "api-key", apiKey[:4]+"******")
@@ -202,50 +211,40 @@ func handleStreamChatCompletion(c *gin.Context, req ChatCompletionRequest) {
 		slog.Error("Error sending start event", "error", err)
 		return
 	}
-
-	reader := bufio.NewReader(r)
 	output := ""
+	reader := json.NewDecoder(r)
 	for {
-		line, _, err := reader.ReadLine()
+		var raw json.RawMessage
+		err := reader.Decode(&raw)
 		if err != nil {
-			if err == io.EOF {
-				// 流结束，发送完成事件
-				finishReason := "stop"
-				endEvent := ChatCompletionStreamResponse{
-					ID:      streamID,
-					Object:  "chat.completion.chunk",
-					Created: created,
-					Model:   req.Model,
-					Choices: []StreamChoice{
-						{
-							Index:        0,
-							FinishReason: &finishReason,
-						},
-					},
-				}
-				sendStreamEvent(c.Writer, endEvent)
-				slog.Info("chat", "output", output)
-				return
+			if err != io.EOF {
+				slog.Error("Error reading from pipe", "error", err)
 			}
-			slog.Error("Error reading from pipe", "error", err)
+			// 流结束，发送完成事件
+			finishReason := "stop"
+			endEvent := ChatCompletionStreamResponse{
+				ID:      streamID,
+				Object:  "chat.completion.chunk",
+				Created: created,
+				Model:   req.Model,
+				Choices: []StreamChoice{
+					{
+						Index:        0,
+						FinishReason: &finishReason,
+					},
+				},
+			}
+			sendStreamEvent(c.Writer, endEvent)
+			slog.Info("chat", "output", output)
 			return
 		}
-		if len(line) == 0 || line[0] != '{' {
-			continue
-		}
-		slog.Debug("execute cursor-agent", "streamID", streamID, "output", string(line))
+		slog.Debug("execute cursor-agent", "streamID", streamID, "output", string(raw))
 		// {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"即可"}]},"session_id":"9c2e2e59-a6cf-4af2-bdbf-72c6353b6a62"}
 		var streamJSON struct {
-			Type    string `json:"type"`
-			Message struct {
-				Role    string `json:"role"`
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-			} `json:"message"`
+			Type    string  `json:"type"`
+			Message Message `json:"message"`
 		}
-		err = json.Unmarshal(line, &streamJSON)
+		err = json.Unmarshal(raw, &streamJSON)
 		if err != nil {
 			slog.Error("Error unmarshalling line", "error", err)
 			continue
