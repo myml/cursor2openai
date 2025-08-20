@@ -220,23 +220,7 @@ func handleStreamChatCompletion(c *gin.Context, req ChatCompletionRequest) {
 			if err != io.EOF {
 				slog.Error("Error reading from pipe", "error", err)
 			}
-			// 流结束，发送完成事件
-			finishReason := "stop"
-			endEvent := ChatCompletionStreamResponse{
-				ID:      streamID,
-				Object:  "chat.completion.chunk",
-				Created: created,
-				Model:   req.Model,
-				Choices: []StreamChoice{
-					{
-						Index:        0,
-						FinishReason: &finishReason,
-					},
-				},
-			}
-			sendStreamEvent(c.Writer, endEvent)
-			slog.Info("chat", "output", output)
-			return
+			break
 		}
 		slog.Debug("execute cursor-agent", "streamID", streamID, "output", string(raw))
 		// {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"即可"}]},"session_id":"9c2e2e59-a6cf-4af2-bdbf-72c6353b6a62"}
@@ -251,6 +235,9 @@ func handleStreamChatCompletion(c *gin.Context, req ChatCompletionRequest) {
 		}
 		if streamJSON.Type != "assistant" {
 			continue
+		}
+		if streamJSON.Type == "result" {
+			break
 		}
 		// 发送内容块
 		contentEvent := ChatCompletionStreamResponse{
@@ -273,6 +260,22 @@ func handleStreamChatCompletion(c *gin.Context, req ChatCompletionRequest) {
 			return
 		}
 	}
+	// 流结束，发送完成事件
+	finishReason := "stop"
+	endEvent := ChatCompletionStreamResponse{
+		ID:      streamID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   req.Model,
+		Choices: []StreamChoice{
+			{
+				Index:        0,
+				FinishReason: &finishReason,
+			},
+		},
+	}
+	sendStreamEvent(c.Writer, endEvent)
+	slog.Info("chat", "output", output)
 }
 
 // 发送流式事件
